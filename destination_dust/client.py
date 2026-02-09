@@ -130,6 +130,7 @@ class DustClient:
         self,
         table_id: str,
         name: str,
+        title: str = "",
         description: str = "",
         columns: Optional[List[dict[str, Any]]] = None,
     ) -> dict:
@@ -139,6 +140,7 @@ class DustClient:
         Args:
             table_id: Unique identifier for the table
             name: Human-readable table name
+            title: Table title (defaults to name if not provided)
             description: Optional table description
             columns: List of column definitions, each with 'name' and 'type'
 
@@ -151,6 +153,7 @@ class DustClient:
         payload: dict[str, Any] = {
             "id": table_id,
             "name": name,
+            "title": title if title else name,  # Use name as fallback if title not provided
         }
         if description:
             payload["description"] = description

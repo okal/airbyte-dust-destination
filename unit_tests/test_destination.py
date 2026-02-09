@@ -240,13 +240,22 @@ class TestWrite:
         table_call = mock_client.upsert_table.call_args
         assert table_call.kwargs["table_id"] == "airbyte_users"
         assert table_call.kwargs["name"] == "users"
-        assert len(table_call.kwargs["columns"]) == 3  # id, name, age
+        assert table_call.kwargs["title"] == "users"  # Title must be in HTTP payload
+        # Should have id, name, age, and mandatory title column
+        assert len(table_call.kwargs["columns"]) == 4
+        column_names = [col["name"] for col in table_call.kwargs["columns"]]
+        assert "title" in column_names  # Title column is mandatory
 
         # Check row upsert
         rows_call = mock_client.upsert_rows.call_args
         assert rows_call.kwargs["table_id"] == "airbyte_users"
         assert len(rows_call.kwargs["rows"]) == 1
-        assert rows_call.kwargs["rows"][0] == {"id": 1, "name": "Alice", "age": 30}
+        row = rows_call.kwargs["rows"][0]
+        assert row["id"] == 1
+        assert row["name"] == "Alice"
+        assert row["age"] == 30
+        assert "title" in row  # Title is mandatory in row
+        assert row["title"] == "Alice"  # Should use name field for title
 
 
 class TestBuildTableId:
@@ -336,3 +345,50 @@ class TestCheckTables:
 
         assert result.status.value == "SUCCEEDED"
         mock_client.check_connection.assert_called_once_with(data_format="tables")
+
+    @patch("destination_dust.destination.DustClient")
+    def test_tables_mode_adds_mandatory_title_column(self, mock_client_cls):
+        """Test that tables mode always includes a title column, even if not in data."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        from airbyte_cdk.models import Type
+
+        # Record without title field
+        record_msg = MagicMock()
+        record_msg.type = Type.RECORD
+        record_msg.record.stream = "products"
+        record_msg.record.data = {"id": 1, "price": 99.99}
+        record_msg.record.emitted_at = 1700000000000
+
+        stream = MagicMock()
+        stream.stream.name = "products"
+        stream.primary_key = [["id"]]
+
+        catalog = MagicMock()
+        catalog.streams = [stream]
+
+        dest = DestinationDust()
+        config = {
+            "api_key": "sk-test",
+            "workspace_id": "w1",
+            "space_id": "s1",
+            "data_source_id": "ds1",
+            "data_format": "tables",
+        }
+
+        list(dest.write(config, catalog, [record_msg]))
+
+        # Verify table was created with title in payload and title column
+        mock_client.upsert_table.assert_called_once()
+        table_call = mock_client.upsert_table.call_args
+        assert table_call.kwargs["title"] == "products"  # Title must be in HTTP payload
+        column_names = [col["name"] for col in table_call.kwargs["columns"]]
+        assert "title" in column_names  # Title column should exist
+
+        # Verify row has title field
+        mock_client.upsert_rows.assert_called_once()
+        rows_call = mock_client.upsert_rows.call_args
+        row = rows_call.kwargs["rows"][0]
+        assert "title" in row
+        assert row["title"] == "products record"  # Fallback title

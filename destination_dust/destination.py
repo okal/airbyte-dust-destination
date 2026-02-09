@@ -202,6 +202,7 @@ class DestinationDust(Destination):
         client.upsert_table(
             table_id=table_id,
             name=stream_name,
+            title=stream_name,  # Use stream name as table title
             description=f"Airbyte stream: {stream_name}",
             columns=columns,
         )
