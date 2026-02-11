@@ -128,21 +128,21 @@ class DustClient:
 
     def upsert_table(
         self,
-        table_id: str,
         name: str,
         title: str = "",
         description: str = "",
         columns: Optional[List[dict[str, Any]]] = None,
+        table_id: Optional[str] = None,
     ) -> dict:
         """
         Create or update a table definition in the configured Dust data source.
 
         Args:
-            table_id: Unique identifier for the table
             name: Human-readable table name
             title: Table title (defaults to name if not provided)
             description: Optional table description
             columns: List of column definitions, each with 'name' and 'type'
+            table_id: Optional unique identifier for the table. If not provided, Dust will generate one.
 
         Returns:
             API response containing table metadata including table ID
@@ -151,10 +151,12 @@ class DustClient:
         """
         url = self._tables_base
         payload: dict[str, Any] = {
-            "id": table_id,
             "name": name,
             "title": title if title else name,  # Use name as fallback if title not provided
         }
+        # Only include id if provided - let Dust generate it otherwise
+        if table_id is not None:
+            payload["id"] = table_id
         if description:
             payload["description"] = description
         if columns:
@@ -169,10 +171,11 @@ class DustClient:
             )
 
         if not response.ok:
-            raise RuntimeError(
-                f"Failed to upsert table '{table_id}': "
-                f"status={response.status_code}, body={response.text[:500]}"
-            )
+            error_msg = f"Failed to upsert table"
+            if table_id:
+                error_msg += f" '{table_id}'"
+            error_msg += f": status={response.status_code}, body={response.text[:500]}"
+            raise RuntimeError(error_msg)
 
         return response.json()
 
@@ -194,7 +197,27 @@ class DustClient:
         Raises RuntimeError on API errors after retries are exhausted.
         """
         url = f"{self._tables_base}/{table_id}/rows"
-        payload = {"rows": rows}
+        
+        # Format rows for Dust API: each row needs row_id and value fields
+        formatted_rows = []
+        for row in rows:
+            # Use 'id' field as row_id if present, otherwise generate one
+            row_id = str(row.get("id", ""))
+            if not row_id:
+                # Generate row_id from first non-empty field value
+                for key, value in row.items():
+                    if value is not None and str(value).strip():
+                        row_id = str(value)
+                        break
+                if not row_id:
+                    row_id = str(hash(str(row)))[:16]  # Fallback to hash
+            
+            formatted_rows.append({
+                "row_id": row_id,
+                "value": row
+            })
+        
+        payload = {"rows": formatted_rows}
 
         response = self._session.post(url, json=payload, timeout=60)
 
