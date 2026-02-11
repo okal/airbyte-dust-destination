@@ -161,7 +161,14 @@ class DustClient:
         if description:
             payload["description"] = description
 
+        logger.debug(f"upsert_table: POST {url}")
+        logger.debug(f"upsert_table: payload={payload}")
+
         response = self._session.post(url, json=payload, timeout=60)
+
+        logger.debug(f"upsert_table: status_code={response.status_code}")
+        logger.debug(f"upsert_table: response_headers={dict(response.headers)}")
+        logger.debug(f"upsert_table: response_body={response.text}")
 
         if response.status_code == 429:
             raise RuntimeError(
@@ -218,7 +225,15 @@ class DustClient:
         
         payload = {"rows": formatted_rows}
 
+        logger.debug(f"upsert_rows: POST {url}")
+        logger.debug(f"upsert_rows: table_id={table_id}, row_count={len(formatted_rows)}")
+        logger.debug(f"upsert_rows: payload={payload}")
+
         response = self._session.post(url, json=payload, timeout=60)
+
+        logger.debug(f"upsert_rows: status_code={response.status_code}")
+        logger.debug(f"upsert_rows: response_headers={dict(response.headers)}")
+        logger.debug(f"upsert_rows: response_body={response.text}")
 
         if response.status_code == 429:
             raise RuntimeError(
