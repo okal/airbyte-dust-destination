@@ -309,9 +309,7 @@ Optional variables: DUST_BASE_URL (default: https://dust.tt)
         logger.error(f"Connection failed: {e}")
         sys.exit(1)
 
-    # Create table schema
-    columns = [{"name": col_name, "type": col_type} for col_name, col_type in schema.items()]
-
+    # Note: Dust API infers table schema from row data, so we don't pass columns
     logger.info(f"Creating/updating table '{table_name}'...")
     try:
         # Let Dust generate the table_id automatically
@@ -319,7 +317,6 @@ Optional variables: DUST_BASE_URL (default: https://dust.tt)
             name=table_name,
             title=table_name,
             description=f"Imported from CSV: {csv_path.name}",
-            columns=columns,
         )
         # Extract the table_id from the response
         # Dust API returns: {"table": {"table_id": "...", ...}}

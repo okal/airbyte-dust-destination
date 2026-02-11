@@ -131,7 +131,6 @@ class DustClient:
         name: str,
         title: str = "",
         description: str = "",
-        columns: Optional[List[dict[str, Any]]] = None,
         table_id: Optional[str] = None,
     ) -> dict:
         """
@@ -139,9 +138,8 @@ class DustClient:
 
         Args:
             name: Human-readable table name
-            title: Table title (defaults to name if not provided)
+            title: Table title (optional)
             description: Optional table description
-            columns: List of column definitions, each with 'name' and 'type'
             table_id: Optional unique identifier for the table. If not provided, Dust will generate one.
 
         Returns:
@@ -150,17 +148,18 @@ class DustClient:
         Raises RuntimeError on API errors after retries are exhausted.
         """
         url = self._tables_base
+        # Only include fields specified in API docs: id, name, title, description
         payload: dict[str, Any] = {
             "name": name,
-            "title": title if title else name,  # Use name as fallback if title not provided
         }
         # Only include id if provided - let Dust generate it otherwise
         if table_id is not None:
             payload["id"] = table_id
+        # Only include title if explicitly provided (not empty)
+        if title:
+            payload["title"] = title
         if description:
             payload["description"] = description
-        if columns:
-            payload["columns"] = columns
 
         response = self._session.post(url, json=payload, timeout=60)
 
