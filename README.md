@@ -104,6 +104,26 @@ python main.py check --config secrets/config.json
 cat messages.jsonl | python main.py write --config secrets/config.json --catalog catalog.json
 ```
 
+### CSV Import Tool
+
+A standalone CLI script is available to import CSV files directly into Dust tables:
+
+```bash
+# Install additional dependency
+pip install python-dotenv
+
+# Set up configuration (copy .env.example to .env and fill in values)
+cp .env.example .env
+
+# Import a CSV file
+python scripts/csv_to_dust.py data.csv
+
+# With custom table ID and name
+python scripts/csv_to_dust.py data.csv --table-id my_table --table-name "My Table"
+```
+
+See [scripts/README.md](scripts/README.md) for detailed documentation.
+
 ### Example Config File (`secrets/config.json`)
 
 ```json
