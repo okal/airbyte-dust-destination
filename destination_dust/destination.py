@@ -104,18 +104,17 @@ class DestinationDust(Destination):
         streams = {
             stream.stream.name: stream for stream in configured_catalog.streams
         }
-        table_id_prefix = config.get("table_id_prefix", "airbyte_")
 
         # Collect records by stream
         stream_rows: dict[str, List[dict[str, Any]]] = defaultdict(list)
         stream_schemas: dict[str, dict[str, str]] = {}  # stream_name -> {column: type}
-        table_ids: dict[str, str] = {}  # stream_name -> table_id
+        table_ids: dict[str, str] = {}  # stream_name -> table_id (uses stream_name)
 
         for message in input_messages:
             if message.type == Type.STATE:
                 # Flush any pending rows before yielding state
                 yield from self._flush_table_batches(
-                    client, stream_rows, stream_schemas, table_ids, streams, table_id_prefix
+                    client, stream_rows, stream_schemas, table_ids, streams
                 )
                 stream_rows.clear()
                 yield message
@@ -137,14 +136,9 @@ class DestinationDust(Destination):
                 # Batch and flush when batch size reached
                 if len(stream_rows[stream_name]) >= TABLE_BATCH_SIZE:
                     if stream_name not in table_ids:
-                        # Build table_id if prefix is provided, otherwise let Dust generate it
-                        table_id = (
-                            self._build_table_id(stream_name, table_id_prefix)
-                            if table_id_prefix
-                            else None
-                        )
+                        # Use stream_name directly as table_id
                         table_ids[stream_name] = self._ensure_table_exists(
-                            client, stream_name, table_id,
+                            client, stream_name, stream_name,
                             stream_schemas[stream_name], streams.get(stream_name)
                         )
 
@@ -154,7 +148,7 @@ class DestinationDust(Destination):
 
         # Flush remaining rows
         yield from self._flush_table_batches(
-            client, stream_rows, stream_schemas, table_ids, streams, table_id_prefix
+            client, stream_rows, stream_schemas, table_ids, streams
         )
 
     def _flush_table_batches(
@@ -164,7 +158,6 @@ class DestinationDust(Destination):
         stream_schemas: dict[str, dict[str, str]],
         table_ids: dict[str, str],
         streams: dict[str, Any],
-        table_id_prefix: str,
     ) -> Iterable[AirbyteMessage]:
         """Flush all pending rows for all streams."""
         for stream_name, rows in stream_rows.items():
@@ -172,14 +165,9 @@ class DestinationDust(Destination):
                 continue
 
             if stream_name not in table_ids:
-                # Build table_id if prefix is provided, otherwise let Dust generate it
-                table_id = (
-                    self._build_table_id(stream_name, table_id_prefix)
-                    if table_id_prefix
-                    else None
-                )
+                # Use stream_name directly as table_id
                 table_ids[stream_name] = self._ensure_table_exists(
-                    client, stream_name, table_id,
+                    client, stream_name, stream_name,
                     stream_schemas[stream_name], streams.get(stream_name)
                 )
 
