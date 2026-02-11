@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Any, List, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -15,12 +16,20 @@ RETRY_STATUS_FORCELIST = [429, 500, 502, 503, 504]
 class DustClient:
     """HTTP client for the Dust document and table upsert APIs."""
 
-    def __init__(self, config: Mapping[str, Any]):
+    def __init__(self, config: Mapping[str, Any], log_callback=None):
+        """
+        Initialize Dust client.
+        
+        Args:
+            config: Configuration dictionary
+            log_callback: Optional callback function(message: str, level: str) for logging
+        """
         self.api_key = config["api_key"]
         self.workspace_id = config["workspace_id"]
         self.space_id = config["space_id"]
         self.data_source_id = config["data_source_id"]
         self.base_url = config.get("base_url", "https://dust.tt").rstrip("/")
+        self.log_callback = log_callback
 
         self._documents_base = (
             f"{self.base_url}/api/v1/w/{self.workspace_id}"
@@ -110,7 +119,19 @@ class DustClient:
         if timestamp is not None:
             payload["timestamp"] = timestamp
 
+        # Log request
+        request_log = f"Upserting document '{document_id}' (title: {title})"
+        logger.debug(request_log)
+        if self.log_callback:
+            self.log_callback(f"Request: POST {url}\nDocument ID: {document_id}\nTitle: {title}", "DEBUG")
+
         response = self._session.post(url, json=payload, timeout=60)
+
+        # Log response
+        response_log = f"Document '{document_id}' upserted successfully (status: {response.status_code})"
+        logger.debug(response_log)
+        if self.log_callback:
+            self.log_callback(f"Response: {response.status_code}\nBody: {response.text[:200]}", "DEBUG")
 
         if response.status_code == 429:
             raise RuntimeError(
@@ -161,14 +182,33 @@ class DustClient:
         if description:
             payload["description"] = description
 
+        # Log request
+        request_log = f"Creating/updating table '{name}' (id: {table_id or 'auto-generated'})"
+        logger.info(request_log)
+        if self.log_callback:
+            self.log_callback(request_log, "INFO")
+        
         logger.debug(f"upsert_table: POST {url}")
         logger.debug(f"upsert_table: payload={payload}")
+        if self.log_callback:
+            self.log_callback(f"Request: POST {url}\nPayload: {json.dumps(payload, indent=2)}", "DEBUG")
 
         response = self._session.post(url, json=payload, timeout=60)
 
+        # Log response
+        response_log = f"Table '{name}' created/updated successfully (status: {response.status_code})"
+        logger.info(response_log)
+        if self.log_callback:
+            self.log_callback(response_log, "INFO")
+        
         logger.debug(f"upsert_table: status_code={response.status_code}")
         logger.debug(f"upsert_table: response_headers={dict(response.headers)}")
         logger.debug(f"upsert_table: response_body={response.text}")
+        if self.log_callback:
+            self.log_callback(
+                f"Response: {response.status_code}\nBody: {response.text[:500]}", 
+                "DEBUG"
+            )
 
         if response.status_code == 429:
             raise RuntimeError(
@@ -225,15 +265,39 @@ class DustClient:
         
         payload = {"rows": formatted_rows}
 
+        # Log request
+        request_log = f"Upserting {len(formatted_rows)} rows into table '{table_id}'"
+        logger.info(request_log)
+        if self.log_callback:
+            self.log_callback(request_log, "INFO")
+        
         logger.debug(f"upsert_rows: POST {url}")
         logger.debug(f"upsert_rows: table_id={table_id}, row_count={len(formatted_rows)}")
         logger.debug(f"upsert_rows: payload={payload}")
+        if self.log_callback:
+            # Show sample of first row for debugging
+            sample_payload = {"rows": formatted_rows[:1]} if formatted_rows else {"rows": []}
+            self.log_callback(
+                f"Request: POST {url}\nRow count: {len(formatted_rows)}\nPayload sample: {json.dumps(sample_payload, indent=2)[:500]}",
+                "DEBUG"
+            )
 
         response = self._session.post(url, json=payload, timeout=60)
 
+        # Log response
+        response_log = f"Successfully upserted {len(formatted_rows)} rows into table '{table_id}' (status: {response.status_code})"
+        logger.info(response_log)
+        if self.log_callback:
+            self.log_callback(response_log, "INFO")
+        
         logger.debug(f"upsert_rows: status_code={response.status_code}")
         logger.debug(f"upsert_rows: response_headers={dict(response.headers)}")
         logger.debug(f"upsert_rows: response_body={response.text}")
+        if self.log_callback:
+            self.log_callback(
+                f"Response: {response.status_code}\nBody: {response.text[:500]}",
+                "DEBUG"
+            )
 
         if response.status_code == 429:
             raise RuntimeError(

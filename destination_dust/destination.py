@@ -9,9 +9,11 @@ from typing import Any, Iterable, List, Mapping, Optional
 from airbyte_cdk.destinations import Destination
 from airbyte_cdk.models import (
     AirbyteConnectionStatus,
+    AirbyteLogMessage,
     AirbyteMessage,
     ConfiguredAirbyteCatalog,
     ConnectorSpecification,
+    Level,
     Status,
     Type,
 )
@@ -22,6 +24,14 @@ logger = logging.getLogger("airbyte")
 
 # Batch size for table row upserts
 TABLE_BATCH_SIZE = 500
+
+
+def _create_log_message(level: Level, message: str) -> AirbyteMessage:
+    """Create an AirbyteLogMessage wrapped in AirbyteMessage."""
+    return AirbyteMessage(
+        type=Type.LOG,
+        log=AirbyteLogMessage(level=level, message=message)
+    )
 
 
 class DestinationDust(Destination):
@@ -48,13 +58,24 @@ class DestinationDust(Destination):
         configured_catalog: ConfiguredAirbyteCatalog,
         input_messages: Iterable[AirbyteMessage],
     ) -> Iterable[AirbyteMessage]:
-        client = DustClient(config)
         data_format = config.get("data_format", "documents")
-
+        
+        # Create log callback to yield log messages
+        log_messages = []
+        def log_callback(message: str, level: str) -> None:
+            log_level = Level.INFO if level == "INFO" else Level.DEBUG if level == "DEBUG" else Level.ERROR
+            log_messages.append(_create_log_message(log_level, message))
+        
+        client = DustClient(config, log_callback=log_callback)
+        
+        yield _create_log_message(Level.INFO, f"Starting sync to Dust (format: {data_format})")
+        
         if data_format == "tables":
-            yield from self._write_tables(client, config, configured_catalog, input_messages)
+            yield from self._write_tables(client, config, configured_catalog, input_messages, log_messages)
         else:
-            yield from self._write_documents(client, configured_catalog, input_messages)
+            yield from self._write_documents(client, configured_catalog, input_messages, log_messages)
+        
+        yield _create_log_message(Level.INFO, "Sync to Dust completed successfully")
 
     def _write_documents(
         self,
@@ -69,12 +90,18 @@ class DestinationDust(Destination):
 
         for message in input_messages:
             if message.type == Type.STATE:
+                # Yield any pending log messages before state
+                yield from log_messages
+                log_messages.clear()
                 yield message
 
             elif message.type == Type.RECORD:
                 record = message.record
                 stream_name = record.stream
                 data = record.data
+                
+                record_count += 1
+                stream_counts[stream_name] = stream_counts.get(stream_name, 0) + 1
 
                 configured_stream = streams.get(stream_name)
                 document_id = self._build_document_id(
@@ -92,6 +119,11 @@ class DestinationDust(Destination):
                     tags=tags,
                     timestamp=timestamp,
                 )
+        
+        # Yield final log messages
+        yield from log_messages
+        log_messages.clear()
+        yield _create_log_message(Level.INFO, f"Processed {record_count} documents across {len(stream_counts)} stream(s)")
 
     def _write_tables(
         self,
@@ -99,20 +131,26 @@ class DestinationDust(Destination):
         config: Mapping[str, Any],
         configured_catalog: ConfiguredAirbyteCatalog,
         input_messages: Iterable[AirbyteMessage],
+        log_messages: List[AirbyteMessage],
     ) -> Iterable[AirbyteMessage]:
         """Write records as table rows with batching."""
         streams = {
             stream.stream.name: stream for stream in configured_catalog.streams
         }
+        
+        yield _create_log_message(Level.INFO, f"Processing {len(streams)} stream(s) in tables mode")
 
         # Collect records by stream
         stream_rows: dict[str, List[dict[str, Any]]] = defaultdict(list)
         stream_schemas: dict[str, dict[str, str]] = {}  # stream_name -> {column: type}
         table_ids: dict[str, str] = {}  # stream_name -> table_id (uses stream_name)
+        record_count = 0
 
         for message in input_messages:
             if message.type == Type.STATE:
                 # Flush any pending rows before yielding state
+                yield from log_messages
+                log_messages.clear()
                 yield from self._flush_table_batches(
                     client, stream_rows, stream_schemas, table_ids, streams
                 )
@@ -123,10 +161,13 @@ class DestinationDust(Destination):
                 record = message.record
                 stream_name = record.stream
                 data = record.data
+                
+                record_count += 1
 
                 # Update schema with this record's fields
                 if stream_name not in stream_schemas:
                     stream_schemas[stream_name] = {}
+                    yield _create_log_message(Level.INFO, f"Discovered stream: {stream_name}")
                 self._update_schema(stream_schemas[stream_name], data)
 
                 # Flatten nested objects to JSON strings for now
@@ -147,9 +188,12 @@ class DestinationDust(Destination):
                     stream_rows[stream_name] = stream_rows[stream_name][TABLE_BATCH_SIZE:]
 
         # Flush remaining rows
+        yield from log_messages
+        log_messages.clear()
         yield from self._flush_table_batches(
             client, stream_rows, stream_schemas, table_ids, streams
         )
+        yield _create_log_message(Level.INFO, f"Processed {record_count} records across {len(stream_schemas)} stream(s)")
 
     def _flush_table_batches(
         self,
