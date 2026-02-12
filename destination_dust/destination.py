@@ -11,6 +11,7 @@ from airbyte_cdk.models import (
     AirbyteConnectionStatus,
     AirbyteLogMessage,
     AirbyteMessage,
+    AirbyteStateMessage,
     ConfiguredAirbyteCatalog,
     ConnectorSpecification,
     Level,
@@ -31,6 +32,51 @@ def _create_log_message(level: Level, message: str) -> AirbyteMessage:
     return AirbyteMessage(
         type=Type.LOG,
         log=AirbyteLogMessage(level=level, message=message)
+    )
+
+
+def _ensure_state_has_id(message: AirbyteMessage) -> AirbyteMessage:
+    """
+    Ensure state message has an id field. If missing, add one.
+    
+    Airbyte requires state messages to have an id field for proper state tracking.
+    The id should be on the AirbyteStateMessage object.
+    """
+    if message.type != Type.STATE:
+        return message
+    
+    # Check if state message already has an id
+    if message.state:
+        # Try to get id from state message
+        state_id = getattr(message.state, 'id', None)
+        if state_id:
+            return message
+        
+        # Get state data
+        state_data = getattr(message.state, 'data', {}) or {}
+    else:
+        state_data = {}
+    
+    # Generate an id from state data hash if no id exists
+    state_id = hashlib.sha256(json.dumps(state_data, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    
+    # Create new state message with id
+    # Try to preserve other attributes if they exist
+    try:
+        new_state = AirbyteStateMessage(
+            data=state_data,
+            id=state_id
+        )
+    except TypeError:
+        # If AirbyteStateMessage doesn't accept id parameter directly, 
+        # try creating it and setting id as attribute
+        new_state = AirbyteStateMessage(data=state_data)
+        if hasattr(new_state, 'id'):
+            new_state.id = state_id
+    
+    return AirbyteMessage(
+        type=Type.STATE,
+        state=new_state
     )
 
 
@@ -97,7 +143,8 @@ class DestinationDust(Destination):
                 # Yield any pending log messages before state
                 yield from log_messages
                 log_messages.clear()
-                yield message
+                # Ensure state message has an id field
+                yield _ensure_state_has_id(message)
 
             elif message.type == Type.RECORD:
                 record = message.record
@@ -159,7 +206,8 @@ class DestinationDust(Destination):
                     client, stream_rows, stream_schemas, table_ids, streams
                 )
                 stream_rows.clear()
-                yield message
+                # Ensure state message has an id field
+                yield _ensure_state_has_id(message)
 
             elif message.type == Type.RECORD:
                 record = message.record
