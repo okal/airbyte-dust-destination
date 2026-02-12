@@ -92,6 +92,83 @@ class DustClient:
 
         logger.info("Dust connection check succeeded.")
 
+    def list_tables(self) -> List[dict[str, Any]]:
+        """
+        List all tables in the configured Dust data source.
+
+        Returns:
+            List of table dictionaries containing table metadata (id, name, title, etc.)
+
+        Raises RuntimeError on API errors after retries are exhausted.
+        """
+        url = self._tables_base
+
+        # Log request
+        request_log = "Listing tables"
+        logger.debug(request_log)
+        if self.log_callback:
+            self.log_callback(f"Request: GET {url}", "DEBUG")
+
+        response = self._session.get(url, timeout=30)
+
+        # Log response
+        response_log = f"Listed tables successfully (status: {response.status_code})"
+        logger.debug(response_log)
+        if self.log_callback:
+            self.log_callback(
+                f"Response: {response.status_code}\nBody: {response.text[:500]}",
+                "DEBUG"
+            )
+
+        if response.status_code == 429:
+            raise RuntimeError(
+                f"Rate limited by Dust API after {RETRY_TOTAL} retries. "
+                "Consider reducing sync frequency."
+            )
+
+        if not response.ok:
+            raise RuntimeError(
+                f"Failed to list tables: "
+                f"status={response.status_code}, body={response.text[:500]}"
+            )
+
+        result = response.json()
+        # Handle different response formats: could be {"tables": [...]} or just [...]
+        if isinstance(result, dict) and "tables" in result:
+            return result["tables"]
+        elif isinstance(result, list):
+            return result
+        else:
+            logger.warning(f"Unexpected list_tables response format: {result}")
+            return []
+
+    def find_table_by_title(self, title: str) -> Optional[str]:
+        """
+        Find a table ID by its title.
+
+        Args:
+            title: The table title to search for
+
+        Returns:
+            The table ID if found, None otherwise
+        """
+        tables = self.list_tables()
+        for table in tables:
+            # Check both 'title' and 'name' fields (API might use either)
+            table_title = table.get("title") or table.get("name", "")
+            if table_title == title:
+                table_id = table.get("id") or table.get("table_id")
+                if table_id:
+                    logger.info(f"Found table '{title}' with ID: {table_id}")
+                    if self.log_callback:
+                        self.log_callback(
+                            f"Found table '{title}' with ID: {table_id}",
+                            "INFO"
+                        )
+                    return table_id
+        logger.debug(f"Table with title '{title}' not found")
+        return None
+
     def upsert_document(
         self,
         document_id: str,
