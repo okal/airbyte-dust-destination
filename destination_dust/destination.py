@@ -82,11 +82,15 @@ class DestinationDust(Destination):
         client: DustClient,
         configured_catalog: ConfiguredAirbyteCatalog,
         input_messages: Iterable[AirbyteMessage],
+        log_messages: List[AirbyteMessage],
     ) -> Iterable[AirbyteMessage]:
         """Write records as documents (original behavior)."""
         streams = {
             stream.stream.name: stream for stream in configured_catalog.streams
         }
+        
+        record_count = 0
+        stream_counts: dict[str, int] = {}
 
         for message in input_messages:
             if message.type == Type.STATE:
@@ -151,7 +155,7 @@ class DestinationDust(Destination):
                 # Flush any pending rows before yielding state
                 yield from log_messages
                 log_messages.clear()
-                yield from self._flush_table_batches(
+                self._flush_table_batches(
                     client, stream_rows, stream_schemas, table_ids, streams
                 )
                 stream_rows.clear()
@@ -190,7 +194,7 @@ class DestinationDust(Destination):
         # Flush remaining rows
         yield from log_messages
         log_messages.clear()
-        yield from self._flush_table_batches(
+        self._flush_table_batches(
             client, stream_rows, stream_schemas, table_ids, streams
         )
         yield _create_log_message(Level.INFO, f"Processed {record_count} records across {len(stream_schemas)} stream(s)")
@@ -202,7 +206,7 @@ class DestinationDust(Destination):
         stream_schemas: dict[str, dict[str, str]],
         table_ids: dict[str, str],
         streams: dict[str, Any],
-    ) -> Iterable[AirbyteMessage]:
+    ) -> None:
         """Flush all pending rows for all streams."""
         for stream_name, rows in stream_rows.items():
             if not rows:
