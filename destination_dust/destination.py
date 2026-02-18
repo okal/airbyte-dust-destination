@@ -23,8 +23,8 @@ from destination_dust.client import DustClient
 
 logger = logging.getLogger("airbyte")
 
-# Batch size for table row upserts
-TABLE_BATCH_SIZE = 500
+# Default batch size for table row upserts (configurable via table_batch_size)
+DEFAULT_TABLE_BATCH_SIZE = 500
 
 
 def _create_log_message(level: Level, message: str) -> AirbyteMessage:
@@ -188,7 +188,8 @@ class DestinationDust(Destination):
         streams = {
             stream.stream.name: stream for stream in configured_catalog.streams
         }
-        
+        batch_size = config.get("table_batch_size", DEFAULT_TABLE_BATCH_SIZE)
+
         yield _create_log_message(Level.INFO, f"Processing {len(streams)} stream(s) in tables mode")
 
         # Collect records by stream
@@ -203,7 +204,7 @@ class DestinationDust(Destination):
                 yield from log_messages
                 log_messages.clear()
                 self._flush_table_batches(
-                    client, stream_rows, stream_schemas, table_ids, streams
+                    client, stream_rows, stream_schemas, table_ids, streams, batch_size
                 )
                 stream_rows.clear()
                 # Ensure state message has an id field
@@ -227,7 +228,7 @@ class DestinationDust(Destination):
                 stream_rows[stream_name].append(flattened_data)
 
                 # Batch and flush when batch size reached
-                if len(stream_rows[stream_name]) >= TABLE_BATCH_SIZE:
+                if len(stream_rows[stream_name]) >= batch_size:
                     if stream_name not in table_ids:
                         # Lookup table by title (stream_name), create if not found
                         table_ids[stream_name] = self._ensure_table_exists(
@@ -235,15 +236,15 @@ class DestinationDust(Destination):
                             stream_schemas[stream_name], streams.get(stream_name)
                         )
 
-                    rows_batch = stream_rows[stream_name][:TABLE_BATCH_SIZE]
+                    rows_batch = stream_rows[stream_name][:batch_size]
                     client.upsert_rows(table_ids[stream_name], rows_batch)
-                    stream_rows[stream_name] = stream_rows[stream_name][TABLE_BATCH_SIZE:]
+                    stream_rows[stream_name] = stream_rows[stream_name][batch_size:]
 
         # Flush remaining rows
         yield from log_messages
         log_messages.clear()
         self._flush_table_batches(
-            client, stream_rows, stream_schemas, table_ids, streams
+            client, stream_rows, stream_schemas, table_ids, streams, batch_size
         )
         yield _create_log_message(Level.INFO, f"Processed {record_count} records across {len(stream_schemas)} stream(s)")
 
@@ -254,6 +255,7 @@ class DestinationDust(Destination):
         stream_schemas: dict[str, dict[str, str]],
         table_ids: dict[str, str],
         streams: dict[str, Any],
+        batch_size: int,
     ) -> None:
         """Flush all pending rows for all streams."""
         for stream_name, rows in stream_rows.items():
@@ -268,8 +270,8 @@ class DestinationDust(Destination):
                 )
 
             # Flush in batches
-            for i in range(0, len(rows), TABLE_BATCH_SIZE):
-                batch = rows[i:i + TABLE_BATCH_SIZE]
+            for i in range(0, len(rows), batch_size):
+                batch = rows[i:i + batch_size]
                 client.upsert_rows(table_ids[stream_name], batch)
 
     def _ensure_table_exists(

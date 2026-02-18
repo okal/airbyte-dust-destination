@@ -58,6 +58,14 @@
         "description": "Prefix for table names when using 'tables' format. Table names will be '{prefix}{stream_name}'. Only used when data_format is 'tables'.",
         "default": "airbyte_",
         "order": 6
+      },
+      "table_batch_size": {
+        "type": "integer",
+        "title": "Table Batch Size",
+        "description": "Number of rows to buffer before flushing to Dust when using 'tables' format. Larger values use more memory but fewer API calls. Only used when data_format is 'tables'.",
+        "default": 500,
+        "minimum": 1,
+        "order": 7
       }
     }
   },
