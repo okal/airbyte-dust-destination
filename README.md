@@ -25,8 +25,6 @@ An [Airbyte](https://airbyte.com/) destination connector that syncs data to [Dus
 ### Install from Source
 
 ```bash
-git clone <repository-url>
-cd airbyte-dust-destination
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

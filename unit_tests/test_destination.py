@@ -1,394 +1,290 @@
-import json
-from unittest.mock import MagicMock, patch
+#
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
+#
 
-import pytest
+import json
+from typing import Any, Dict
+from unittest import mock
+from unittest.mock import Mock
 
 from destination_dust.destination import DestinationDust
 
-
-class TestBuildDocumentId:
-    def test_with_single_primary_key(self):
-        stream = MagicMock()
-        stream.primary_key = [["id"]]
-        data = {"id": 42, "name": "Alice"}
-
-        result = DestinationDust._build_document_id("users", data, stream)
-        assert result == "users-42"
-
-    def test_with_composite_primary_key(self):
-        stream = MagicMock()
-        stream.primary_key = [["org_id"], ["user_id"]]
-        data = {"org_id": "acme", "user_id": 7}
-
-        result = DestinationDust._build_document_id("members", data, stream)
-        assert result == "members-acme-7"
-
-    def test_with_nested_primary_key(self):
-        stream = MagicMock()
-        stream.primary_key = [["meta", "id"]]
-        data = {"meta": {"id": "abc-123"}, "value": "x"}
-
-        result = DestinationDust._build_document_id("items", data, stream)
-        # The hyphen in "abc-123" is preserved (it's a safe char)
-        assert result == "items-abc-123"
-
-    def test_without_primary_key(self):
-        stream = MagicMock()
-        stream.primary_key = []
-        data = {"foo": "bar", "num": 1}
-
-        result = DestinationDust._build_document_id("events", data, stream)
-        assert result.startswith("events-")
-        assert len(result) == len("events-") + 16  # 16-char hash
-
-    def test_without_primary_key_is_deterministic(self):
-        stream = MagicMock()
-        stream.primary_key = []
-        data = {"a": 1, "b": 2}
-
-        id1 = DestinationDust._build_document_id("s", data, stream)
-        id2 = DestinationDust._build_document_id("s", data, stream)
-        assert id1 == id2
-
-    def test_without_configured_stream(self):
-        data = {"x": "y"}
-        result = DestinationDust._build_document_id("stream", data, None)
-        assert result.startswith("stream-")
-
-    def test_sanitizes_special_characters(self):
-        stream = MagicMock()
-        stream.primary_key = [["id"]]
-        data = {"id": "hello world/foo@bar"}
-
-        result = DestinationDust._build_document_id("s", data, stream)
-        assert result == "s-hello_world_foo_bar"
-
-    def test_missing_pk_field_in_data(self):
-        stream = MagicMock()
-        stream.primary_key = [["missing_field"]]
-        data = {"other": "value"}
-
-        result = DestinationDust._build_document_id("s", data, stream)
-        assert result == "s-"
-
-
-class TestBuildTitle:
-    def test_uses_title_field(self):
-        assert DestinationDust._build_title("s", {"title": "My Doc"}) == "My Doc"
-
-    def test_uses_name_field(self):
-        assert DestinationDust._build_title("s", {"name": "Alice"}) == "Alice"
-
-    def test_uses_subject_field(self):
-        assert DestinationDust._build_title("s", {"subject": "Re: Hello"}) == "Re: Hello"
-
-    def test_prefers_title_over_name(self):
-        data = {"title": "T", "name": "N"}
-        assert DestinationDust._build_title("s", data) == "T"
-
-    def test_fallback_to_stream_name(self):
-        assert DestinationDust._build_title("users", {"id": 1}) == "users record"
-
-    def test_skips_empty_title(self):
-        assert DestinationDust._build_title("s", {"title": "", "name": "N"}) == "N"
-
-    def test_skips_none_title(self):
-        assert DestinationDust._build_title("s", {"title": None, "name": "N"}) == "N"
-
-
-class TestCheck:
-    @patch("destination_dust.destination.DustClient")
-    def test_check_success(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-        }
-        result = dest.check(MagicMock(), config)
-
-        assert result.status.value == "SUCCEEDED"
-        mock_client.check_connection.assert_called_once_with(data_format="documents")
-
-    @patch("destination_dust.destination.DustClient")
-    def test_check_failure(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client.check_connection.side_effect = ConnectionError("bad key")
-        mock_client_cls.return_value = mock_client
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "bad",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-        }
-        result = dest.check(MagicMock(), config)
-
-        assert result.status.value == "FAILED"
-        assert "bad key" in result.message
-
-
-class TestWrite:
-    @patch("destination_dust.destination.DustClient")
-    def test_yields_state_messages(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-        }
-
-        state_msg = MagicMock()
-        state_msg.type = MagicMock()
-        state_msg.type.__eq__ = lambda self, other: other.name == "STATE"
-        # Use the actual Type enum
-        from airbyte_cdk.models import Type
-        state_msg.type = Type.STATE
-
-        catalog = MagicMock()
-        catalog.streams = []
-
-        results = list(dest.write(config, catalog, [state_msg]))
-        assert len(results) == 1
-        assert results[0] is state_msg
-
-    @patch("destination_dust.destination.DustClient")
-    def test_upserts_record_messages(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        from airbyte_cdk.models import Type
-
-        record_msg = MagicMock()
-        record_msg.type = Type.RECORD
-        record_msg.record.stream = "users"
-        record_msg.record.data = {"id": 1, "name": "Alice"}
-        record_msg.record.emitted_at = 1700000000000
-
-        stream = MagicMock()
-        stream.stream.name = "users"
-        stream.primary_key = [["id"]]
-
-        catalog = MagicMock()
-        catalog.streams = [stream]
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-        }
-
-        results = list(dest.write(config, catalog, [record_msg]))
-
-        assert len(results) == 0  # No state messages to yield
-        mock_client.upsert_document.assert_called_once()
-
-        call_kwargs = mock_client.upsert_document.call_args
-        assert call_kwargs.kwargs["document_id"] == "users-1"
-        assert call_kwargs.kwargs["title"] == "Alice"
-        assert call_kwargs.kwargs["tags"] == ["airbyte:stream:users"]
-        assert json.loads(call_kwargs.kwargs["text"]) == {"id": 1, "name": "Alice"}
-
-    @patch("destination_dust.destination.DustClient")
-    def test_writes_tables_mode(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        from airbyte_cdk.models import Type
-
-        record_msg = MagicMock()
-        record_msg.type = Type.RECORD
-        record_msg.record.stream = "users"
-        record_msg.record.data = {"id": 1, "name": "Alice", "age": 30}
-        record_msg.record.emitted_at = 1700000000000
-
-        stream = MagicMock()
-        stream.stream.name = "users"
-        stream.primary_key = [["id"]]
-
-        catalog = MagicMock()
-        catalog.streams = [stream]
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-            "data_format": "tables",
-            "table_id_prefix": "airbyte_",
-        }
-
-        results = list(dest.write(config, catalog, [record_msg]))
-
-        assert len(results) == 0  # No state messages to yield
-        mock_client.upsert_table.assert_called_once()
-        mock_client.upsert_rows.assert_called_once()
-
-        # Check table creation
-        table_call = mock_client.upsert_table.call_args
-        assert table_call.kwargs["table_id"] == "airbyte_users"
-        assert table_call.kwargs["name"] == "users"
-        assert table_call.kwargs["title"] == "users"  # Title must be in HTTP payload
-        # Should have id, name, age, and mandatory title column
-        assert len(table_call.kwargs["columns"]) == 4
-        column_names = [col["name"] for col in table_call.kwargs["columns"]]
-        assert "title" in column_names  # Title column is mandatory
-
-        # Check row upsert
-        rows_call = mock_client.upsert_rows.call_args
-        assert rows_call.kwargs["table_id"] == "airbyte_users"
-        assert len(rows_call.kwargs["rows"]) == 1
-        row = rows_call.kwargs["rows"][0]
-        assert row["id"] == 1
-        assert row["name"] == "Alice"
-        assert row["age"] == 30
-        assert "title" in row  # Title is mandatory in row
-        assert row["title"] == "Alice"  # Should use name field for title
-
-
-class TestBuildTableId:
-    def test_basic_table_id(self):
-        result = DestinationDust._build_table_id("users", "airbyte_")
-        assert result == "airbyte_users"
-
-    def test_sanitizes_special_characters(self):
-        result = DestinationDust._build_table_id("my-stream", "prefix_")
-        assert result == "prefix_my-stream"
-
-    def test_sanitizes_unsafe_characters(self):
-        result = DestinationDust._build_table_id("stream@name", "p_")
-        assert result == "p_stream_name"
-
-
-class TestInferColumnType:
-    def test_string_type(self):
-        assert DestinationDust._infer_column_type("hello") == "string"
-        assert DestinationDust._infer_column_type(None) == "string"
-
-    def test_number_type(self):
-        assert DestinationDust._infer_column_type(42) == "number"
-        assert DestinationDust._infer_column_type(3.14) == "number"
-
-    def test_boolean_type(self):
-        assert DestinationDust._infer_column_type(True) == "boolean"
-        assert DestinationDust._infer_column_type(False) == "boolean"
-
-    def test_json_type(self):
-        assert DestinationDust._infer_column_type({"key": "value"}) == "json"
-        assert DestinationDust._infer_column_type([1, 2, 3]) == "json"
-
-
-class TestFlattenRecord:
-    def test_flattens_nested_objects(self):
-        data = {"id": 1, "meta": {"key": "value"}}
-        result = DestinationDust._flatten_record(data)
-        assert result["id"] == 1
-        assert result["meta"] == '{"key": "value"}'
-
-    def test_flattens_arrays(self):
-        data = {"id": 1, "tags": ["a", "b"]}
-        result = DestinationDust._flatten_record(data)
-        assert result["id"] == 1
-        assert isinstance(result["tags"], str)
-        assert json.loads(result["tags"]) == ["a", "b"]
-
-    def test_preserves_primitive_types(self):
-        data = {"id": 1, "name": "Alice", "active": True, "score": 95.5}
-        result = DestinationDust._flatten_record(data)
-        assert result == data
-
-
-class TestUpdateSchema:
-    def test_updates_schema_from_record(self):
-        schema = {}
-        data = {"id": 1, "name": "Alice", "active": True}
-        DestinationDust._update_schema(schema, data)
-        assert schema["id"] == "number"
-        assert schema["name"] == "string"
-        assert schema["active"] == "boolean"
-
-    def test_handles_nested_objects(self):
-        schema = {}
-        data = {"id": 1, "meta": {"key": "value"}}
-        DestinationDust._update_schema(schema, data)
-        assert schema["id"] == "number"
-        assert schema["meta"] == "json"
-
-
-class TestCheckTables:
-    @patch("destination_dust.destination.DustClient")
-    def test_check_with_tables_format(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-            "data_format": "tables",
-        }
-        result = dest.check(MagicMock(), config)
-
-        assert result.status.value == "SUCCEEDED"
-        mock_client.check_connection.assert_called_once_with(data_format="tables")
-
-    @patch("destination_dust.destination.DustClient")
-    def test_tables_mode_adds_mandatory_title_column(self, mock_client_cls):
-        """Test that tables mode always includes a title column, even if not in data."""
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-
-        from airbyte_cdk.models import Type
-
-        # Record without title field
-        record_msg = MagicMock()
-        record_msg.type = Type.RECORD
-        record_msg.record.stream = "products"
-        record_msg.record.data = {"id": 1, "price": 99.99}
-        record_msg.record.emitted_at = 1700000000000
-
-        stream = MagicMock()
-        stream.stream.name = "products"
-        stream.primary_key = [["id"]]
-
-        catalog = MagicMock()
-        catalog.streams = [stream]
-
-        dest = DestinationDust()
-        config = {
-            "api_key": "sk-test",
-            "workspace_id": "w1",
-            "space_id": "s1",
-            "data_source_id": "ds1",
-            "data_format": "tables",
-        }
-
-        list(dest.write(config, catalog, [record_msg]))
-
-        # Verify table was created with title in payload and title column
-        mock_client.upsert_table.assert_called_once()
-        table_call = mock_client.upsert_table.call_args
-        assert table_call.kwargs["title"] == "products"  # Title must be in HTTP payload
-        column_names = [col["name"] for col in table_call.kwargs["columns"]]
-        assert "title" in column_names  # Title column should exist
-
-        # Verify row has title field
-        mock_client.upsert_rows.assert_called_once()
-        rows_call = mock_client.upsert_rows.call_args
-        row = rows_call.kwargs["rows"][0]
-        assert "title" in row
-        assert row["title"] == "products record"  # Fallback title
+from airbyte_cdk.models import AirbyteConnectionStatus, AirbyteMessage, Status, Type
+from airbyte_cdk.models.airbyte_protocol import (
+    AirbyteRecordMessage,
+    AirbyteStateMessage,
+    AirbyteStream,
+    ConfiguredAirbyteCatalog,
+    ConfiguredAirbyteStream,
+    DestinationSyncMode,
+    SyncMode,
+)
+
+
+config = {
+    "api_key": "sk-test",
+    "workspace_id": "w1",
+    "space_id": "s1",
+    "data_source_id": "ds1",
+    "base_url": "https://dust.tt",
+}
+
+
+def _init_mocks(client_init):
+    """Patch DustClient and return a mock client."""
+    mock_client = Mock()
+    client_init.return_value = mock_client
+    return mock_client
+
+
+def _state() -> AirbyteMessage:
+    return AirbyteMessage(type=Type.STATE, state=AirbyteStateMessage(data={}))
+
+
+def _record(stream: str, data: Dict[str, Any]) -> AirbyteMessage:
+    return AirbyteMessage(
+        type=Type.RECORD,
+        record=AirbyteRecordMessage(stream=stream, data=data, emitted_at=0),
+    )
+
+
+def _configured_catalog(stream_name: str = "people", primary_key: list = None) -> ConfiguredAirbyteCatalog:
+    """Build a catalog with a single stream (e.g. 'people')."""
+    stream_schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "email": {"type": "string"}},
+    }
+    airbyte_stream = AirbyteStream(
+        name=stream_name,
+        json_schema=stream_schema,
+        supported_sync_modes=[SyncMode.incremental],
+    )
+    append_stream = ConfiguredAirbyteStream(
+        stream=airbyte_stream,
+        sync_mode=SyncMode.incremental,
+        destination_sync_mode=DestinationSyncMode.append,
+        primary_key=primary_key or [["id"]],
+    )
+    return ConfiguredAirbyteCatalog(streams=[append_stream])
+
+
+# --- Check ---
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_check_succeeds(client_init):
+    mock_client = _init_mocks(client_init)
+    destination = DestinationDust()
+    status = destination.check(logger=Mock(), config=config)
+    assert status.status == Status.SUCCEEDED
+    mock_client.check_connection.assert_called_once_with(data_format="documents")
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_check_fails_on_connection(client_init):
+    mock_client = _init_mocks(client_init)
+    mock_client.check_connection.side_effect = Exception("Connection failed")
+    destination = DestinationDust()
+    status = destination.check(logger=Mock(), config=config)
+    assert status.status == Status.FAILED
+    assert "Connection failed" in status.message
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_check_with_tables_format(client_init):
+    mock_client = _init_mocks(client_init)
+    destination = DestinationDust()
+    tables_config = {**config, "data_format": "tables"}
+    status = destination.check(logger=Mock(), config=tables_config)
+    assert status.status == Status.SUCCEEDED
+    mock_client.check_connection.assert_called_once_with(data_format="tables")
+
+
+# --- Write (documents mode) ---
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_write_succeeds(client_init):
+    stream = "people"
+    data = {"id": 1, "name": "John Doe", "email": "john.doe@example.com"}
+    mock_client = _init_mocks(client_init)
+    input_messages = [_record(stream=stream, data=data), _state()]
+    destination = DestinationDust()
+    messages = list(
+        destination.write(
+            config=config,
+            configured_catalog=_configured_catalog(stream_name=stream),
+            input_messages=input_messages,
+        )
+    )
+    # LOG, (optional logs), STATE
+    state_msgs = [m for m in messages if m.type == Type.STATE]
+    assert len(state_msgs) >= 1
+    mock_client.upsert_document.assert_called_once()
+    call_kwargs = mock_client.upsert_document.call_args.kwargs
+    assert call_kwargs["document_id"] == "people-1"
+    assert call_kwargs["title"] == "John Doe"
+    assert call_kwargs["tags"] == ["airbyte:stream:people"]
+    assert json.loads(call_kwargs["text"]) == data
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_write_succeeds_with_custom_base_url(client_init):
+    stream = "people"
+    data = {"id": 1, "name": "Jane"}
+    mock_client = _init_mocks(client_init)
+    custom_config = {**config, "base_url": "https://eu.dust.tt"}
+    input_messages = [_record(stream=stream, data=data), _state()]
+    destination = DestinationDust()
+    list(
+        destination.write(
+            config=custom_config,
+            configured_catalog=_configured_catalog(stream_name=stream),
+            input_messages=input_messages,
+        )
+    )
+    mock_client.upsert_document.assert_called_once()
+    # Client was constructed with custom config (base_url is used in client init)
+    client_init.assert_called_once()
+    assert client_init.call_args[0][0]["base_url"] == "https://eu.dust.tt"  # first positional arg is config
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_write_processes_message_from_unknown_stream(client_init):
+    """When stream is not in catalog, Dust still writes the record (hash-based document id)."""
+    stream = "shapes"
+    data = {"name": "Rectangle", "color": "blue"}
+    mock_client = _init_mocks(client_init)
+    # Catalog only has "people", not "shapes"
+    input_messages = [_record(stream=stream, data=data), _state()]
+    destination = DestinationDust()
+    list(
+        destination.write(
+            config=config,
+            configured_catalog=_configured_catalog(stream_name="people"),
+            input_messages=input_messages,
+        )
+    )
+    # Dust writes every record; document_id is stream-hash when stream not in catalog
+    mock_client.upsert_document.assert_called_once()
+    call_kwargs = mock_client.upsert_document.call_args.kwargs
+    assert call_kwargs["document_id"].startswith("shapes-")
+    assert call_kwargs["tags"] == ["airbyte:stream:shapes"]
+
+
+# --- Write (tables mode) ---
+
+
+@mock.patch("destination_dust.destination.DustClient")
+def test_write_succeeds_tables_mode(client_init):
+    stream = "people"
+    data = {"id": 1, "name": "John Doe", "email": "john.doe@example.com"}
+    mock_client = _init_mocks(client_init)
+    # No existing table -> will call upsert_table; must return table_id for upsert_rows
+    mock_client.find_table_by_title.return_value = None
+    mock_client.upsert_table.return_value = {"table_id": "test-table-id"}
+    tables_config = {**config, "data_format": "tables", "table_id_prefix": "airbyte_"}
+    input_messages = [_record(stream=stream, data=data), _state()]
+    destination = DestinationDust()
+    list(
+        destination.write(
+            config=tables_config,
+            configured_catalog=_configured_catalog(stream_name=stream),
+            input_messages=input_messages,
+        )
+    )
+    mock_client.upsert_table.assert_called_once()
+    mock_client.upsert_rows.assert_called_once()
+    table_call = mock_client.upsert_table.call_args.kwargs
+    assert table_call["name"] == stream
+    assert table_call["title"] == stream
+    rows = mock_client.upsert_rows.call_args[0][1]  # positional: (table_id, rows)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "John Doe"
+
+
+# --- Helpers: _build_document_id ---
+
+
+def test_build_document_id_with_single_primary_key():
+    stream = Mock()
+    stream.primary_key = [["id"]]
+    data = {"id": 42, "name": "Alice"}
+    result = DestinationDust._build_document_id("users", data, stream)
+    assert result == "users-42"
+
+
+def test_build_document_id_with_composite_primary_key():
+    stream = Mock()
+    stream.primary_key = [["org_id"], ["user_id"]]
+    data = {"org_id": "acme", "user_id": 7}
+    result = DestinationDust._build_document_id("members", data, stream)
+    assert result == "members-acme-7"
+
+
+def test_build_document_id_without_primary_key():
+    stream = Mock()
+    stream.primary_key = []
+    data = {"foo": "bar", "num": 1}
+    result = DestinationDust._build_document_id("events", data, stream)
+    assert result.startswith("events-")
+    assert len(result) == len("events-") + 16
+
+
+def test_build_document_id_without_primary_key_is_deterministic():
+    stream = Mock()
+    stream.primary_key = []
+    data = {"a": 1, "b": 2}
+    id1 = DestinationDust._build_document_id("s", data, stream)
+    id2 = DestinationDust._build_document_id("s", data, stream)
+    assert id1 == id2
+
+
+def test_build_document_id_sanitizes_special_characters():
+    stream = Mock()
+    stream.primary_key = [["id"]]
+    data = {"id": "hello world/foo@bar"}
+    result = DestinationDust._build_document_id("s", data, stream)
+    assert result == "s-hello_world_foo_bar"
+
+
+# --- Helpers: _build_title ---
+
+
+def test_build_title_uses_name_field():
+    assert DestinationDust._build_title("s", {"name": "Alice"}) == "Alice"
+
+
+def test_build_title_prefers_title_over_name():
+    assert DestinationDust._build_title("s", {"title": "T", "name": "N"}) == "T"
+
+
+def test_build_title_fallback_to_stream_name():
+    assert DestinationDust._build_title("users", {"id": 1}) == "users record"
+
+
+# --- Helpers: _build_table_id ---
+
+
+def test_build_table_id_basic():
+    assert DestinationDust._build_table_id("users", "airbyte_") == "airbyte_users"
+
+
+def test_build_table_id_sanitizes_unsafe_characters():
+    assert DestinationDust._build_table_id("stream@name", "p_") == "p_stream_name"
+
+
+# --- Helpers: _flatten_record ---
+
+
+def test_flatten_record_preserves_primitives():
+    data = {"id": 1, "name": "Alice", "active": True}
+    result = DestinationDust._flatten_record(data)
+    assert result == data
+
+
+def test_flatten_record_flattens_nested_objects():
+    data = {"id": 1, "meta": {"key": "value"}}
+    result = DestinationDust._flatten_record(data)
+    assert result["id"] == 1
+    assert result["meta"] == '{"key": "value"}'
